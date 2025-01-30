@@ -1,0 +1,44 @@
+# This is an example of a .gitignore file.
+# It ignores files and directories that are typically not necessary to track in Git.
+
+# Python cache files
+__pycache__
+
+# Compiled Python files
+*.pyc
+*.pyo
+
+# Python test results
+.pytest_cache/
+nosetests.xml
+
+# IDE-specific files
+.vscode/
+.idea/
+
+# Build artifacts
+dist/
+build/
+
+# Local configuration files
+.env
+.local.settings.json
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*~
+
+# Virtual environment directories
+venv/
+env/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# QGroundControl files (assuming you want to ignore all QGC files)
+*.qgc 
+
+# Add more patterns as needed
