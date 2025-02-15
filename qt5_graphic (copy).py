@@ -21,13 +21,6 @@ class UAVMonitorApp(QWidget):
         self.get_first_alt = 0.0
         self.get_first_lon = 0.0
         self.get_first_lat = 0.0
-        
-        self.last_x = None  # 上一次 X 座標
-        self.last_y = None  # 上一次 Y 座標
-        self.last_time = time.time()  # 上一次時間
-        self.vx = 0.0  # X 方向速度
-        self.vy = 0.0  # Y 方向速度
-
         # Initialize ROS Node
         rclpy.init()
         self.node = rclpy.create_node('uav_monitor_node')
@@ -167,28 +160,10 @@ class UAVMonitorApp(QWidget):
             self.node.get_logger().info(f"Home Position: Lat={self.get_first_lat:.6f}, Lon={self.get_first_lon:.6f}, Alt={self.get_first_alt:.2f}m")
 
         try:
-            current_time = time.time()
-            latitude = (msg.lat+353632629)/100
-            longitude = ((msg.lon) - (1491652380))/100
-            dt = current_time - self.last_time
-
-            if dt < 0.156:
-                return
-            
-            if self.last_x is not None and self.last_y is not None:
-                # 計算 ΔX, ΔY, Δt
-                self.vx = (latitude - self.last_x) / dt  # 計算 X 方向速度
-                self.vy = (longitude - self.last_y) / dt  # 計算 Y 方向速度
-
-            
-
-            # 更新記錄
-            self.last_x = latitude
-            self.last_y = longitude
-            self.last_time = current_time
-
-            self.x_value.setText(f"{self.vx:.2f} m/s")
-            self.y_value.setText(f"{self.vy:.2f} m/s")
+            longitude = ((msg.lon) - (self.get_first_lon))/100
+            latitude = (msg.lat-self.get_first_lat)/100
+            self.x_value.setText(f"{latitude:.2f} m")
+            self.y_value.setText(f"{longitude:.2f} m")
 
             # # 更新折線圖數據
             # current_time = time.time() - self.start_time
@@ -216,8 +191,8 @@ class UAVMonitorApp(QWidget):
                         # 更新折線圖數據
             current_time = time.time() - self.start_time
             self.timestamps.append(current_time)
-            self.altitude_data.append(self.vx)
-            self.speed_data.append(self.vy)
+            self.altitude_data.append(latitude)
+            self.speed_data.append(longitude)
 
             # 保持數據範圍在 200 秒內
             time_window = 100  # seconds

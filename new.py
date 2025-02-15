@@ -1,277 +1,116 @@
 import rclpy
-from vertical_speed_control import VerticalSpeedControlNode, VerticalSpeedControlGUI
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout
-import threading
+from rclpy.node import Node
+from mavros_msgs.msg import PositionTarget
+from mavros_msgs.srv import CommandBool, SetMode
+from sensor_msgs.msg import FluidPressure  # 訂閱氣壓計數據
 import time
-import matplotlib.pyplot as plt
-import sys
 
+class BarometerAltitudeControl(Node):
+    def __init__(self):
+        super().__init__('barometer_altitude_control_node')
+        
+        # 發佈原始位置控制訊息
+        self.raw_pub = self.create_publisher(PositionTarget, '/mavros/setpoint_raw/local', 10)
 
-class CombinedControlGUI(QWidget):
-    def __init__(self, node):
-        super().__init__()
-        self.node = node
-
-        # 預設參數(speed)
-        self.kp_alt = 0.3
-        self.ki_alt = 0.01
-        self.kd_alt = 0.05
-        self.max_vertical_speed = 3.0
-        self.altitude_tolerance = 0.2
-
-        self.timestamps = []  # 時間戳
-        self.target_speeds = []  # target_vertical_speed 數據
-
-        # 初始化 Matplotlib 圖表
-        self.fig, self.ax = plt.subplots()
-        self.canvas = FigureCanvas(self.fig)
-        self.line, = self.ax.plot([], [], label="Target Vertical Speed (m/s)", color="blue")
-        self.ax.set_title("Target Vertical Speed Over Time")
-        self.ax.set_xlabel("Time (s)")
-        self.ax.set_ylabel("Speed (m/s)")
-        self.ax.legend()
-        self.ax.grid()
-
-        self.init_ui()
-
-    def init_ui(self):
-        self.setWindowTitle("Combined Control: Vertical Speed & Altitude")
-
-        layout = QVBoxLayout()
-
-        # VS control---------------------------------------------------------------------------------
-        # Target Vertical Speed Control
-        self.vs_label = QLabel("Target Vertical Speed (m/s):")
-        self.vs_input = QLineEdit()
-        self.vs_input.setText(str(self.node.get_parameter('target_vertical_speed').value))
-        self.set_vs_button = QPushButton("Set Vertical Speed")
-        self.set_vs_button.clicked.connect(self.set_vertical_speed)
-
-        # PID Parameters Control for Vertical Speed
-        self.kp_label = QLabel("Kp (Vertical Speed):")
-        self.kp_input = QLineEdit()
-        self.kp_input.setText(str(self.node.get_parameter('kp_vs').value))
-        self.ki_label = QLabel("Ki (Vertical Speed):")
-        self.ki_input = QLineEdit()
-        self.ki_input.setText(str(self.node.get_parameter('ki_vs').value))
-        self.kd_label = QLabel("Kd (Vertical Speed):")
-        self.kd_input = QLineEdit()
-        self.kd_input.setText(str(self.node.get_parameter('kd_vs').value))
-        self.set_pid_button = QPushButton("Set PID Parameters")
-        self.set_pid_button.clicked.connect(self.set_pid_parameters)
-
-        # Altitude control---------------------------------------------------------------------------------
-        # Altitude PID Control
-        self.alt_kp_label = QLabel("Kp (Altitude):")
-        self.alt_kp_input = QLineEdit()
-        self.alt_kp_input.setText(str(self.kp_alt))
-        self.alt_ki_label = QLabel("Ki (Altitude):")
-        self.alt_ki_input = QLineEdit()
-        self.alt_ki_input.setText(str(self.ki_alt))
-        self.alt_kd_label = QLabel("Kd (Altitude):")
-        self.alt_kd_input = QLineEdit()
-        self.alt_kd_input.setText(str(self.kd_alt))
-        self.alt_speed_label = QLabel("Max Vertical Speed (m/s):")
-        self.alt_speed_input = QLineEdit()
-        self.alt_speed_input.setText(str(self.max_vertical_speed))
-        self.alt_tolerance_label = QLabel("Altitude Tolerance (m):")
-        self.alt_tolerance_input = QLineEdit()
-        self.alt_tolerance_input.setText(str(self.altitude_tolerance))
-        self.set_alt_pid_button = QPushButton("Set Altitude Parameters")
-        self.set_alt_pid_button.clicked.connect(self.set_alt_pid_parameters)
-
-        # Altitude Control
-        self.alt_label = QLabel("Target Altitude (m):")
-        self.alt_input = QLineEdit()
-        self.alt_input.setPlaceholderText("Enter target altitude...")
-        self.set_alt_button = QPushButton("Set Altitude")
-        self.set_alt_button.clicked.connect(self.set_altitude)
-
-        # Target Vertical Speed Control
-        self.vs_label = QLabel("Target Vertical Speed (m/s):")
-        self.vs_input = QLineEdit()
-        self.vs_input.setText(str(self.node.get_parameter('target_vertical_speed').value))
-        self.set_vs_button = QPushButton("Set Vertical Speed")
-        self.set_vs_button.clicked.connect(self.set_vertical_speed)
-
-        # Add all widgets to the layout
-        layout.addWidget(self.vs_label)
-        layout.addWidget(self.vs_input)
-        layout.addWidget(self.set_vs_button)
-
-        layout.addWidget(self.kp_label)
-        layout.addWidget(self.kp_input)
-        layout.addWidget(self.ki_label)
-        layout.addWidget(self.ki_input)
-        layout.addWidget(self.kd_label)
-        layout.addWidget(self.kd_input)
-        layout.addWidget(self.set_pid_button)
-
-        layout.addWidget(self.alt_kp_label)
-        layout.addWidget(self.alt_kp_input)
-        layout.addWidget(self.alt_ki_label)
-        layout.addWidget(self.alt_ki_input)
-        layout.addWidget(self.alt_kd_label)
-        layout.addWidget(self.alt_kd_input)
-        layout.addWidget(self.alt_speed_label)
-        layout.addWidget(self.alt_speed_input)
-        layout.addWidget(self.alt_tolerance_label)
-        layout.addWidget(self.alt_tolerance_input)
-        layout.addWidget(self.set_alt_pid_button)
-
-        layout.addWidget(self.alt_label)
-        layout.addWidget(self.alt_input)
-        layout.addWidget(self.set_alt_button)
-        layout.addWidget(self.canvas)
-
-        self.setLayout(layout)
-
-    def set_vertical_speed(self):
-        try:
-            target_vs = float(self.vs_input.text())
-            self.node.set_parameters([rclpy.parameter.Parameter('target_vertical_speed', rclpy.Parameter.Type.DOUBLE, target_vs)])
-            self.node.get_logger().info(f"Target vertical speed set to: {target_vs} m/s")
-        except ValueError:
-            self.node.get_logger().error("Invalid input for vertical speed. Please enter a valid number.")
-
-    def set_pid_parameters(self):
-        try:
-            kp = float(self.kp_input.text())
-            ki = float(self.ki_input.text())
-            kd = float(self.kd_input.text())
-
-            self.node.set_parameters([
-                rclpy.parameter.Parameter('kp_vs', rclpy.Parameter.Type.DOUBLE, kp),
-                rclpy.parameter.Parameter('ki_vs', rclpy.Parameter.Type.DOUBLE, ki),
-                rclpy.parameter.Parameter('kd_vs', rclpy.Parameter.Type.DOUBLE, kd),
-            ])
-            self.node.get_logger().info(f"PID parameters set to: Kp={kp}, Ki={ki}, Kd={kd}")
-        except ValueError:
-            self.node.get_logger().error("Invalid input for PID parameters. Please enter valid numbers.")
-
-    def set_alt_pid_parameters(self):
-        try:
-            self.kp_alt = float(self.alt_kp_input.text())
-            self.ki_alt = float(self.alt_ki_input.text())
-            self.kd_alt = float(self.alt_kd_input.text())
-            self.max_vertical_speed = float(self.alt_speed_input.text())
-            self.altitude_tolerance = float(self.alt_tolerance_input.text())
-
-            self.node.get_logger().info(
-                f"Altitude PID parameters set to: Kp={self.kp_alt}, Ki={self.ki_alt}, Kd={self.kd_alt}, "
-                f"Max Speed={self.max_vertical_speed} m/s, Tolerance={self.altitude_tolerance} m"
-            )
-        except ValueError:
-            self.node.get_logger().error("Invalid input for altitude PID parameters. Please enter valid numbers.")
-
-    def update_plot(self):
-        """更新折線圖"""
-        current_time = time.time()
-        target_speed = self.node.get_parameter('target_vertical_speed').value
-
-        # 初次記錄起始時間
-        if not self.timestamps:
-            self.start_time = current_time
-
-        # 添加新數據
-        self.timestamps.append(current_time - self.start_time)
-        self.target_speeds.append(target_speed)
-
-        # 保留最近 100 個數據點
-        if len(self.timestamps) > 100:
-            self.timestamps.pop(0)
-            self.target_speeds.pop(0)
-
-        # 更新圖表數據
-        self.line.set_xdata(self.timestamps)
-        self.line.set_ydata(self.target_speeds)
-        self.ax.relim()
-        self.ax.autoscale_view()
-        self.canvas.draw_idle()
-
-
-    def set_altitude(self):
-        try:
-            # 獲取目標高度
-            target_altitude = float(self.alt_input.text())
-            self.node.get_logger().info(f"Target altitude set to: {target_altitude} m")
-
-            # 獲取當前高度
-            current_altitude = self.node.altitude
-
-            # 計算高度誤差
-            altitude_error = target_altitude - current_altitude
-
-            # 積分項限幅
-            self.node.error_sum += altitude_error * 0.05  # 0.05 為控制時間間隔 (秒)
-            integral_limit = 10.0  # 限制積分項範圍
-            self.node.error_sum = max(-integral_limit, min(integral_limit, self.node.error_sum))
-
-            # 微分項計算
-            altitude_derivative = (altitude_error - self.node.last_error) / 0.05
-            self.node.last_error = altitude_error
-
-            # PID 控制計算
-            target_vertical_speed = (
-                self.kp_alt * altitude_error +  # 比例項
-                self.ki_alt * self.node.error_sum +  # 積分項
-                self.kd_alt * altitude_derivative  # 微分項
-            )
-
-            # 限制目標垂直速度
-            target_vertical_speed = max(-self.max_vertical_speed, min(self.max_vertical_speed, target_vertical_speed))
-
-            # 判斷是否進入穩定範圍
-            if abs(altitude_error) < self.altitude_tolerance:
-                target_vertical_speed = 0.0
-                self.node.get_logger().info("Altitude reached. Holding position.")
-
-            # 更新節點中的目標垂直速度
-            # self.node.set_parameters([
-            #     rclpy.parameter.Parameter('target_vertical_speed', rclpy.Parameter.Type.DOUBLE, target_vertical_speed)
-                
-            # ])
-            
-            self.node.get_logger().info(
-                f"Altitude Error: {altitude_error:.2f}, Target VS: {target_vertical_speed:.2f} m/s"
-            )
-        except ValueError:
-            self.node.get_logger().error("Invalid altitude input. Please enter a valid number.")
-        except AttributeError:
-            self.node.get_logger().error("Failed to retrieve current altitude. Ensure the node is correctly subscribed to altitude data.")
+        # 訂閱氣壓計數據
+        self.barometer_sub = self.create_subscription(
+            FluidPressure,
+            '/mavros/imu/static_pressure',
+            self.barometer_callback,
+            10
+        )
 
 
 
+        self.current_pressure = None  # 紀錄目前氣壓值
 
-def main():
-    rclpy.init()
-    node = VerticalSpeedControlNode()
+        # 服務客戶端：用來解鎖 (arming) 和設置飛行模式
+        self.arming_client = self.create_client(CommandBool, '/mavros/cmd/arming')
+        self.mode_client = self.create_client(SetMode, '/mavros/set_mode')
 
-    app = QApplication(sys.argv)
-    gui = CombinedControlGUI(node)
+        # 等待服務啟動
+        while not self.arming_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info('等待 arming 服務啟動...')
+        while not self.mode_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info('等待 set_mode 服務啟動...')
 
-    from PyQt5.QtCore import QTimer
-    timer = QTimer()
-    timer.timeout.connect(gui.update_plot)
-    timer.start(100)  
+        # 設定飛行模式為 GUIDED_NOGPS 並解鎖
+        self.set_mode('GUIDED_NOGPS')
+        self.arm()
 
-    gui.show()
+        # 給無人機一點時間啟動
+        time.sleep(2)
 
-    def spin_node():
-        while rclpy.ok():
-            gui.set_altitude()
-            rclpy.spin_once(node, timeout_sec=0.1)
+        # 控制飛行高度
+        #self.set_altitude(30.0)  # 上升到 10 公尺
+        #time.sleep(10)
+        #self.set_altitude(5.0)   # 降到 5 公尺
+        #time.sleep(5)
+        #self.set_altitude(1.0)   # 降到 1 公尺 (準備降落)
+        self.create_timer(1.5, lambda: self.set_altitude(30.0))
+        
 
-    ros_thread = threading.Thread(target=spin_node)
-    ros_thread.start()
 
-    sys.exit(app.exec_())
+    def barometer_callback(self, msg):
+        """接收氣壓計數據"""
+        self.current_pressure = msg.fluid_pressure
+        self.get_logger().info(f'目前氣壓值: {self.current_pressure:.2f} Pa')
 
-    node.destroy_node()
+    def set_mode(self, mode):
+        """設定 UAV 飛行模式為 GUIDED_NOGPS"""
+        req = SetMode.Request()
+        req.custom_mode = mode
+        future = self.mode_client.call_async(req)
+        rclpy.spin_until_future_complete(self, future)
+        if future.result().mode_sent:
+            self.get_logger().info(f'飛行模式已切換到 {mode}')
+        else:
+            self.get_logger().error(f'無法切換飛行模式到 {mode}')
+
+    def arm(self):
+        """解鎖 UAV"""
+        req = CommandBool.Request()
+        req.value = True
+        future = self.arming_client.call_async(req)
+        rclpy.spin_until_future_complete(self, future)
+        if future.result().success:
+            self.get_logger().info('UAV 已解鎖')
+        else:
+            self.get_logger().error('解鎖失敗')
+
+    def set_altitude(self, target_altitude):
+        """使用 setpoint_raw 設定 UAV 目標高度"""
+        target = PositionTarget()
+        target.header.stamp = self.get_clock().now().to_msg()
+        target.header.frame_id = 'map'
+
+        # 設定要控制的高度，忽略位置與速度
+        target.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
+        target.type_mask = (
+            PositionTarget.IGNORE_VX |
+            PositionTarget.IGNORE_VY |
+            PositionTarget.IGNORE_AFX |
+            PositionTarget.IGNORE_AFY |
+            PositionTarget.IGNORE_AFZ |
+            PositionTarget.IGNORE_YAW |
+            PositionTarget.IGNORE_YAW_RATE
+        )
+
+        # 保持當前的 x, y 位置，僅調整 z (高度)
+        target.position.x = 0.0
+        target.position.y = 0.0
+        target.position.z = target_altitude  # 以公尺為單位指定目標高度
+
+        self.raw_pub.publish(target)
+        self.get_logger().info(f'目標高度設定為 {target_altitude} 公尺')
+
+def main(args=None):
+    rclpy.init(args=args)
+    barometer_altitude_control = BarometerAltitudeControl()
+    rclpy.spin(barometer_altitude_control)
+    barometer_altitude_control.destroy_node()
     rclpy.shutdown()
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
 

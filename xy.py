@@ -46,11 +46,11 @@ class VerticalSpeedControlNode(Node):
         self.declare_parameter('min_vertical_speed', -2.0)
         self.declare_parameter('altitude_tolerance', 0.0)
 
-        self.declare_parameter('target_x', 0.0)
-        self.declare_parameter('target_y', 0.0)
-        self.declare_parameter('kp_xy', 0.05)
-        self.declare_parameter('ki_xy', 0.0)
-        self.declare_parameter('kd_xy', 0.0)
+        self.declare_parameter('target_vx', 0.0)
+        self.declare_parameter('target_vy', 0.0)
+        self.declare_parameter('kp_xy_vs', 0.25)
+        self.declare_parameter('ki_xy_vs', 0.0)
+        self.declare_parameter('kd_xy_vs', 0.0)
 
         # 預設參數(speed)
         self.vertical_speed = 0.0
@@ -60,14 +60,19 @@ class VerticalSpeedControlNode(Node):
         self.is_offboard = False
 
         # xy
-        self.x_pos = 0.0
-        self.y_pos = 0.0
+        self.vx = 0.0
+        self.vy = 0.0
+        self.last_x = None
+        self.last_y = None
+        self.last_time = time.time() 
         self.is_get_first_alt = True
         self.get_first_alt = 0.0
         self.get_first_lon = 0.0
         self.get_first_lat = 0.0
-        self.error_x = 0.0
-        self.error_y = 0.0
+        self.error_vx = 0.0
+        self.error_vy = 0.0
+        self.last_error_vx = 0.0
+        self.last_error_vy = 0.0
 
         # 預設參數(altitu)
         self.altitude = 0.0
@@ -88,12 +93,29 @@ class VerticalSpeedControlNode(Node):
     def gps_callback(self, msg):
         if self.is_get_first_alt:
             self.get_first_alt = msg.alt
-            self.get_first_lon = msg.lon
             self.get_first_lat = msg.lat
+            self.get_first_lon = msg.lon
             self.is_get_first_alt = False
 
-        self.y_pos = (msg.lon-self.get_first_lon)/100
-        self.x_pos = (msg.lat-self.get_first_lat)/100
+        current_time = time.time()
+        # start location is (-353632629, 1491652380)
+        self.x_pos = (msg.lat+353632629)/100
+        self.y_pos = (msg.lon-1491652380)/100
+        dt = current_time - self.last_time
+
+        if dt<0.156:
+            return
+
+        if self.last_x is not None and self.last_y is not None:
+            # 計算 ΔX, ΔY, Δt
+            self.vx = (self.x_pos - self.last_x) / dt  # 計算 X 方向速度
+            self.vy = (self.y_pos - self.last_y) / dt  # 計算 Y 方向速度
+
+        # 更新記錄
+        self.last_x = self.x_pos
+        self.last_y = self.y_pos
+        self.last_time = current_time
+
 
     def vfr_hud_callback(self, msg):
         self.altitude = msg.altitude
@@ -140,8 +162,6 @@ class VerticalSpeedControlNode(Node):
         # vs error
         error = target_vertical_speed - self.vertical_speed
         proportional = kp_vs * error
-        self.error_sum += error * 0.05
-        integral = ki_vs * self.error_sum
 
         
         # vs caculate
@@ -164,21 +184,63 @@ class VerticalSpeedControlNode(Node):
         target_thrust = max(0.3, min(1.0, target_thrust))  # Keep thrust within limits
         self.last_thrust = target_thrust
 
+
+        # xy para(0, 0)
+        target_vx = self.get_parameter('target_vx').value
+        target_vy = self.get_parameter('target_vy').value
+        kp_xy_vs = self.get_parameter('kp_xy_vs').value
+        ki_xy_vs = self.get_parameter('ki_xy_vs').value
+        kd_xy_vs = self.get_parameter('kd_xy_vs').value
+
+        # xy error
+        error_vx = target_vx - self.vx
+        error_vy = target_vy - self.vy
+
+        # xy angle
+        # proportional_pitch = kp_xy_vs * error_vx
+        proportional_roll = -kp_xy_vs * error_vy
+        proportional_pitch = 0.0
+
+        self.error_vx += error_vx * 0.05
+        self.error_vy += error_vy * 0.05
+        integral_vx = ki_xy_vs * self.error_vx
+        integral_vy = ki_xy_vs * self.error_vy
+
+        derivative_vx = kd_xy_vs * (error_vx - self.last_error_vx) / 0.05
+        derivative_vy = kd_xy_vs * (error_vy - self.last_error_vy) / 0.05
+        self.last_error_vx = error_vx
+        self.last_error_vy = error_vy
+
+        pitch_correction = proportional_pitch + integral_vx + derivative_vx
+        roll_correction = proportional_roll + integral_vy + derivative_vy
+
+        max_angle = np.deg2rad(10)  # 限制最大 10°
+        pitch_correction = np.clip(pitch_correction, -max_angle, max_angle)
+        roll_correction = np.clip(roll_correction, -max_angle, max_angle)
+
+
+        # alttitude man min limit
+        # max_angle = np.deg2rad(10)
+        # pitch_correction = np.clip(pitch_correction, -max_angle, max_angle)
+        # roll_correction = np.clip(roll_correction, -max_angle, max_angle)
+
+        # 轉換為四元數
+        quat = R.from_euler('xyz', [roll_correction, pitch_correction, 0]).as_quat()
+
+
         # Publish thrust
         attitude_target = AttitudeTarget()
-        attitude_target.orientation.x = 0.0
-        attitude_target.orientation.y = 0.0
-        attitude_target.orientation.z = 0.0
-        attitude_target.orientation.w = 1.0
-        attitude_target.body_rate.x = 0.0
-        attitude_target.body_rate.y = 0.0
-        attitude_target.body_rate.z = 0.0
-        attitude_target.thrust = target_thrust
+        attitude_target.orientation.x = quat[0]
+        attitude_target.orientation.y = quat[1]
+        attitude_target.orientation.z = quat[2]
+        attitude_target.orientation.w = quat[3]
+        attitude_target.type_mask = 7
+        attitude_target.thrust = 0.5
 
         self.attitude_publisher.publish(attitude_target)
 
         self.get_logger().info(
-            f"Target VS: {target_vertical_speed:.2f}, Vertical Speed: {self.vertical_speed:.2f}, Thrust: {target_thrust:.2f}, Error: {error:.2f}"
+            f"Target X: {target_vx:.2f},Target Y: {target_vy:.2f}, roll: {roll_correction:.2f}, pitch: {pitch_correction:.2f}, ErrorX: {error_vx:.2f}, ErrorY: {error_vy:.2f}"
         )
 
     def control_altitu(self):
@@ -448,4 +510,5 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+
 
